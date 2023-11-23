@@ -184,8 +184,6 @@ export async function spawnFile(
   options: SpawnOptionsWithStdioTuple<StdioNull | StdioPipe, StdioNullLog, StdioNullLog> & SpawnOptionsEncoding,
 ): Promise<Record<string, never>>;
 
-/* eslint-enable no-redeclare */
-
 export async function spawnFile(
   command: string,
   args?: string[] | SpawnOptionsLog & SpawnOptionsEncoding,
@@ -244,7 +242,7 @@ export async function spawnFile(
     ...options,
     stdio:       mungedStdio,
   });
-  const resultMap: Record<number, 'stdout' | 'stderr'> = { 1: 'stdout', 2: 'stderr' };
+  const resultMap = { 1: 'stdout', 2: 'stderr' } as const;
   const result: { stdout?: string, stderr?: string } = {};
 
   if (Array.isArray(mungedStdio)) {

@@ -37,7 +37,7 @@ export class Tray {
   private static instance: Tray;
   private abortController: AbortController | undefined;
   private networkState: boolean | undefined;
-  private networkInterval: NodeJS.Timer;
+  private networkInterval: NodeJS.Timeout;
 
   protected contextMenuItems: Electron.MenuItemConstructorOptions[] = [
     {
@@ -92,6 +92,7 @@ export class Tray {
     },
     { type: 'separator' },
     {
+      id:    'quit',
       label: 'Quit Rancher Desktop',
       role:  'quit',
       type:  'normal',
@@ -181,6 +182,7 @@ export class Tray {
     this.watchForChanges();
 
     mainEvents.on('backend-locked-update', this.backendStateEvent);
+    mainEvents.emit('backend-locked-check');
     mainEvents.on('k8s-check-state', this.k8sStateChangedEvent);
     mainEvents.on('settings-update', this.settingsUpdateEvent);
 
@@ -350,11 +352,11 @@ export class Tray {
       networkStatusItem.label = `Network status: ${ this.currentNetworkStatus }`;
     }
 
-    for (const item of this.contextMenuItems) {
-      if (item.id === 'preferences' || item.id === 'dashboard' || item.id === 'contexts') {
+    this.contextMenuItems
+      .filter(item => item.id && ['preferences', 'dashboard', 'contexts', 'quit'].includes(item.id))
+      .forEach((item) => {
         item.enabled = !this.backendIsLocked;
-      }
-    }
+      });
 
     const contextMenu = Electron.Menu.buildFromTemplate(this.contextMenuItems);
 

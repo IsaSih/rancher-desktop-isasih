@@ -1,6 +1,7 @@
 <template>
   <div class="containers">
     <SortableTable
+      ref="sortableTableRef"
       :headers="headers"
       key-field="Id"
       :rows="rows"
@@ -8,9 +9,31 @@
       :row-actions="true"
       :paging="true"
       :rows-per-page="10"
+      :has-advanced-filtering="true"
       :loading="!containersList"
-      @selection="handleSelection"
     >
+      <template #col:containerState="{row}">
+        <td>
+          <badge-state
+            :color="isRunning(row) ? 'bg-success' : 'bg-darker'"
+            :label="row.State"
+          />
+        </td>
+      </template>
+      <template #col:imageName="{row}">
+        <td>
+          <span v-tooltip="getTooltipConfig(row.imageName)">
+            {{ shortSha(row.imageName) }}
+          </span>
+        </td>
+      </template>
+      <template #col:containerName="{row}">
+        <td>
+          <span v-tooltip="getTooltipConfig(row.containerName)">
+            {{ shortSha(row.containerName) }}
+          </span>
+        </td>
+      </template>
       <template #col:ports="{ row }">
         <td>
           <div class="port-container">
@@ -27,11 +50,12 @@
             <div
               v-if="shouldHaveDropdown(row.Ports)"
               class="dropdown"
+              @mouseenter="addDropDownPosition"
+              @mouseleave="clearDropDownPosition"
             >
               <span>
-                {{ t('containers.manage.table.showMore') }}
+                ...
               </span>
-
               <div class="dropdown-content">
                 <a
                   v-for="port in getUniquePorts(row.Ports).slice(2)"
@@ -45,23 +69,6 @@
               </div>
             </div>
           </div>
-        </td>
-      </template>
-
-      <template #col:containerState="{row}">
-        <td>
-          <badge-state
-            :color="isRunning(row) ? 'bg-success' : 'bg-darker'"
-            :label="row.State"
-          />
-        </td>
-      </template>
-
-      <template #col:imageName="{row}">
-        <td>
-          <span v-tooltip="getTooltipConfig(row.imageName)">
-            {{ shortSha(row.imageName) }}
-          </span>
         </td>
       </template>
     </SortableTable>
@@ -85,7 +92,6 @@ export default {
     return {
       ddClient:       null,
       containersList: null,
-      selected:       [],
       showRunning:    false,
       headers:        [
         // INFO: Disable for now since we can only get the running containers.
@@ -133,7 +139,7 @@ export default {
           '',
         );
         container.started =
-          container.State === 'running' ? container.Status : '';
+        container.State === 'running' ? container.Status : '';
         container.imageName = container.Image;
 
         container.availableActions = [
@@ -142,7 +148,7 @@ export default {
             action:     'stopContainer',
             enabled:    this.isRunning(container),
             bulkable:   true,
-            bulkAction: 'stopContainers',
+            bulkAction: 'stopContainer',
           },
           {
             label:      'Start',
@@ -156,27 +162,29 @@ export default {
             action:     'deleteContainer',
             enabled:    this.isStopped(container),
             bulkable:   true,
-            bulkAction: 'deleteContainers',
+            bulkAction: 'deleteContainer',
           },
         ];
 
         if (!container.stopContainer) {
-          container.stopContainer = () => {
-            this.stopContainer(container);
+          container.stopContainer = (...args) => {
+            this.stopContainer(...(args?.length > 0 ? args : [container]));
           };
         }
 
         if (!container.startContainer) {
-          container.startContainer = () => {
-            this.startContainer(container);
+          container.startContainer = (...args) => {
+            this.startContainer(...(args?.length > 0 ? args : [container]));
           };
         }
 
         if (!container.deleteContainer) {
-          container.deleteContainer = () => {
-            this.deleteContainer(container);
+          container.deleteContainer = (...args) => {
+            this.deleteContainer(...(args?.length > 0 ? args : [container]));
           };
         }
+
+        container.containerState = container.State;
 
         return container;
       });
@@ -213,8 +221,35 @@ export default {
     clearInterval(containerCheckInterval);
   },
   methods: {
-    handleSelection(item) {
-      this.selected = [...item];
+    clearDropDownPosition(e) {
+      const target = e.target;
+
+      const dropdownContent = target.querySelector('.dropdown-content');
+
+      if (dropdownContent) {
+        dropdownContent.style.top = '';
+      }
+    },
+    addDropDownPosition(e) {
+      const table = this.$refs.sortableTableRef.$el;
+      const target = e.target;
+
+      const dropdownContent = target.querySelector('.dropdown-content');
+
+      if (dropdownContent) {
+        const dropdownRect = target.getBoundingClientRect();
+        const tableRect = table.getBoundingClientRect();
+        const targetTopPos = dropdownRect.top - tableRect.top;
+        const tableHeight = tableRect.height;
+
+        if (targetTopPos < tableHeight / 2) {
+          // Show dropdownContent below the target
+          dropdownContent.style.top = `${ dropdownRect.bottom }px`;
+        } else {
+          // Show dropdownContent above the target
+          dropdownContent.style.top = `${ dropdownRect.top - dropdownContent.getBoundingClientRect().height }px`;
+        }
+      }
     },
     async getContainers() {
       const containers = await this.ddClient?.docker.listContainers({ all: true });
@@ -252,12 +287,11 @@ export default {
     isStopped(container) {
       return container.State === 'created' || container.State === 'exited';
     },
-    async execCommand(command, container) {
+    async execCommand(command, _ids) {
       try {
-        const ids =
-          this.selected.length > 1 ? [...this.selected.map(container => container.Id)] : [container.Id];
+        const ids = _ids?.length ? _ids.map(e => e.Id) : [_ids.Id];
 
-        console.info(`Executing command ${ command } on container(s) ${ ids }`);
+        console.info(`Executing command ${ command } on container ${ ids }`);
 
         const { stderr, stdout } = await this.ddClient.docker.cli.exec(
           command,
@@ -273,42 +307,49 @@ export default {
 
         return stdout;
       } catch (error) {
-        // TODO: Remove ?
         window.alert(error.message);
         console.error(`Error executing command ${ command }`, error.message);
       }
     },
     shortSha(sha) {
-      if (!sha.startsWith('sha256:')) {
-        return sha;
+      const prefix = 'sha256:';
+
+      if (sha.includes(prefix)) {
+        const startIndex = sha.indexOf(prefix) + prefix.length;
+        const actualSha = sha.slice(startIndex);
+
+        return `${ sha.slice(0, startIndex) }${ actualSha.slice(0, 3) }..${ actualSha.slice(-3) }`;
       }
 
-      return `${ sha.slice(0, 10) }..${ sha.slice(-5) }`;
+      return sha;
     },
     getTooltipConfig(sha) {
-      if (!sha.startsWith('sha256:')) {
+      if (!sha.includes('sha256:')) {
         return { content: undefined };
       }
 
       return { content: sha };
     },
-    getUniquePorts(obj) {
-      const uniquePorts = {};
+    getUniquePorts(ports) {
+      const keys = Object.keys(ports);
 
-      Object.keys(obj).forEach((key) => {
-        const ports = obj[key];
+      const uniquePortMap = keys.map((key) => {
+        const values = ports[key];
+        const hostPorts = values.map(value => value.HostPort);
+        const uniqueHostPorts = [...new Set(hostPorts)];
 
-        if (!ports) {
-          return;
-        }
-
-        const firstPort = ports[0]?.HostPort || '';
-        const secondPort = ports[1]?.HostPort || '';
-
-        uniquePorts[`${ firstPort }:${ secondPort }`] = true;
+        return { [key]: uniqueHostPorts };
       });
 
-      return Object.keys(uniquePorts);
+      const displayMap = uniquePortMap.map((element) => {
+        const key = Object.keys(element)[0];
+        const values = element[key];
+        const port = key.split('/')[0];
+
+        return values.map(value => `${ value }:${ port }`);
+      });
+
+      return [].concat.apply([], displayMap);
     },
     shouldHaveDropdown(ports) {
       if (!ports) {
@@ -341,14 +382,19 @@ export default {
   position: relative;
   display: inline-block;
 
+  span {
+    cursor: pointer;
+    padding: 5px;
+  }
+
   &-content {
     display: none;
-    position: absolute;
+    position: fixed;
     z-index: 1;
-    padding-top: 5px;
     border-start-start-radius: var(--border-radius);
     background: var(--default);
     padding: 5px;
+    transition: all 0.5s ease-in-out;
 
     a {
       display: block;
@@ -375,6 +421,6 @@ export default {
 
 .port-container {
   display: flex;
-  flex-direction: column;
+  gap: 5px;
 }
 </style>

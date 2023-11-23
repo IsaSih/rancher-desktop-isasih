@@ -2,7 +2,7 @@ load '../helpers/load'
 
 local_setup() {
     skip_on_unix 'roaming appdata => local appdata migration is windows-only'
-    ROAMING_HOME="$(win32env APPDATA)/rancher-desktop"
+    ROAMING_HOME="$(wslpath_from_win32_env APPDATA)/rancher-desktop"
 }
 
 @test 'factory reset' {
@@ -13,7 +13,7 @@ local_setup() {
     start_container_engine
     wait_for_container_engine
 
-    rdctl api -X PUT /settings --body '{ "version": '"$(get_setting .version)"', "WSL": {"integrations": { "beaker" : true }}}'
+    rdctl api -X PUT /settings --body '{ "version": 9, "WSL": {"integrations": { "beaker" : true }}}'
     rdctl shutdown
     mkdir -p "$ROAMING_HOME"
     mv "$PATH_CONFIG_FILE" "$ROAMING_HOME/settings.json"

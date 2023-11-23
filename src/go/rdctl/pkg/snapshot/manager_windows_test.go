@@ -2,17 +2,17 @@ package snapshot
 
 import (
 	"errors"
+	"github.com/rancher-sandbox/rancher-desktop/src/go/rdctl/pkg/lock"
+	"github.com/rancher-sandbox/rancher-desktop/src/go/rdctl/pkg/paths"
+	"github.com/rancher-sandbox/rancher-desktop/src/go/rdctl/pkg/wsl"
 	"os"
 	"path/filepath"
 	"testing"
-
-	p "github.com/rancher-sandbox/rancher-desktop/src/go/rdctl/pkg/paths"
-	"github.com/rancher-sandbox/rancher-desktop/src/go/rdctl/pkg/wsl"
 )
 
-func populateFiles(t *testing.T, _ bool) (p.Paths, map[string]TestFile) {
+func populateFiles(t *testing.T, _ bool) (paths.Paths, map[string]TestFile) {
 	baseDir := t.TempDir()
-	paths := p.Paths{
+	appPaths := paths.Paths{
 		Config:        filepath.Join(baseDir, "config"),
 		Snapshots:     filepath.Join(baseDir, "snapshots"),
 		WslDistro:     filepath.Join(baseDir, "wslDistro"),
@@ -20,7 +20,7 @@ func populateFiles(t *testing.T, _ bool) (p.Paths, map[string]TestFile) {
 	}
 	testFiles := map[string]TestFile{
 		"settings.json": {
-			Path:     filepath.Join(paths.Config, "settings.json"),
+			Path:     filepath.Join(appPaths.Config, "settings.json"),
 			Contents: `{"test": "settings.json"}`,
 		},
 	}
@@ -33,23 +33,26 @@ func populateFiles(t *testing.T, _ bool) (p.Paths, map[string]TestFile) {
 			t.Fatalf("failed to create test file %q: %s", file.Path, err)
 		}
 	}
-	return paths, testFiles
+	return appPaths, testFiles
 }
 
-func newTestManager(paths p.Paths) Manager {
-	manager := NewManager(paths)
-	snapshotter := NewSnapshotterImpl(paths)
+func newTestManager(appPaths paths.Paths) *Manager {
+	snapshotter := NewSnapshotterImpl()
 	snapshotter.WSL = wsl.MockWSL{}
-	manager.Snapshotter = snapshotter
+	manager := &Manager{
+		Paths:         appPaths,
+		Snapshotter:   snapshotter,
+		BackendLocker: &lock.MockBackendLock{},
+	}
 	return manager
 }
 
 func TestManagerWindows(t *testing.T) {
 	t.Run("Create should create the necessary files", func(t *testing.T) {
-		paths, _ := populateFiles(t, false)
+		appPaths, _ := populateFiles(t, false)
 
 		// create snapshot
-		testManager := newTestManager(paths)
+		testManager := newTestManager(appPaths)
 		snapshot, err := testManager.Create("test-snapshot", "")
 		if err != nil {
 			t.Fatalf("unexpected error creating snapshot: %s", err)
@@ -57,8 +60,8 @@ func TestManagerWindows(t *testing.T) {
 
 		// ensure desired files are present
 		snapshotFiles := []string{
-			filepath.Join(paths.Snapshots, snapshot.ID, "settings.json"),
-			filepath.Join(paths.Snapshots, snapshot.ID, "metadata.json"),
+			filepath.Join(appPaths.Snapshots, snapshot.ID, "settings.json"),
+			filepath.Join(appPaths.Snapshots, snapshot.ID, "metadata.json"),
 		}
 		for _, file := range snapshotFiles {
 			if _, err := os.ReadFile(file); err != nil {
@@ -68,8 +71,8 @@ func TestManagerWindows(t *testing.T) {
 	})
 
 	t.Run("Restore should work properly", func(t *testing.T) {
-		paths, testFiles := populateFiles(t, false)
-		manager := newTestManager(paths)
+		appPaths, testFiles := populateFiles(t, false)
+		manager := newTestManager(appPaths)
 		snapshot, err := manager.Create("test-snapshot", "")
 		if err != nil {
 			t.Fatalf("failed to create snapshot: %s", err)
@@ -79,7 +82,7 @@ func TestManagerWindows(t *testing.T) {
 				t.Fatalf("failed to modify %s: %s", testFileName, err)
 			}
 		}
-		if err := manager.Restore(snapshot.ID); err != nil {
+		if err := manager.Restore(snapshot.Name); err != nil {
 			t.Fatalf("failed to restore snapshot: %s", err)
 		}
 		for testFileName, testFile := range testFiles {
@@ -94,23 +97,23 @@ func TestManagerWindows(t *testing.T) {
 	})
 
 	t.Run("Restore should create any needed parent directories", func(t *testing.T) {
-		paths, _ := populateFiles(t, true)
-		manager := newTestManager(paths)
+		appPaths, _ := populateFiles(t, true)
+		manager := newTestManager(appPaths)
 		snapshot, err := manager.Create("test-snapshot", "")
 		if err != nil {
 			t.Fatalf("failed to create snapshot: %s", err)
 		}
 		testDirs := []string{
-			paths.Config,
-			paths.WslDistro,
-			paths.WslDistroData,
+			appPaths.Config,
+			appPaths.WslDistro,
+			appPaths.WslDistroData,
 		}
 		for _, testDir := range testDirs {
 			if err := os.RemoveAll(testDir); err != nil {
 				t.Fatalf("failed to remove test directory %q: %s", testDir, err)
 			}
 		}
-		if err := manager.Restore(snapshot.ID); err != nil {
+		if err := manager.Restore(snapshot.Name); err != nil {
 			t.Fatalf("failed to restore snapshot: %s", err)
 		}
 		for _, testDir := range testDirs {

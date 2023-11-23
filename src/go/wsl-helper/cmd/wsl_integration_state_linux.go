@@ -13,6 +13,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
+
 package cmd
 
 import (
@@ -27,9 +28,9 @@ import (
 
 var wslIntegrationStateViper = viper.New()
 
-// wslIntegrationStateCmd represents the `wsl integration-state` command.
+// wslIntegrationStateCmd represents the `wsl integration state` command.
 var wslIntegrationStateCmd = &cobra.Command{
-	Use:   "integration-state",
+	Use:   "state",
 	Short: "Manage markers for WSL integration state",
 	Long:  "Manage markers for Rancher Desktop WSL distro integration state",
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -56,5 +57,5 @@ func init() {
 	wslIntegrationStateCmd.MarkFlagRequired("mode")
 	wslIntegrationStateViper.AutomaticEnv()
 	wslIntegrationStateViper.BindPFlags(wslIntegrationStateCmd.Flags())
-	wslCmd.AddCommand(wslIntegrationStateCmd)
+	wslIntegrationCmd.AddCommand(wslIntegrationStateCmd)
 }
