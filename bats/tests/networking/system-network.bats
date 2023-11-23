@@ -18,7 +18,7 @@ local_setup() {
     assert_output false
 }
 
-@test 'Check Privileged Services' {
+@test 'Check Privileged Services - with defined host IP address' {
     if [ "$RD_LOCATION" != "system" ]; then
         skip 'This test only applies for system installation'
     fi
