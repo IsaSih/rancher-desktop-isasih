@@ -1,5 +1,10 @@
 <template>
-  <div class="wrapper">
+  <div
+    class="wrapper"
+    :class="{
+      'blur': blur
+    }"
+  >
     <rd-header
       class="header"
       @open-preferences="openPreferences"
@@ -13,7 +18,7 @@
     <main class="body">
       <Nuxt />
     </main>
-    <BackendProgress class="progress" />
+    <status-bar class="status-bar"></status-bar>
     <!-- The ActionMenu is used by SortableTable for per-row actions. -->
     <ActionMenu />
   </div>
@@ -24,9 +29,9 @@
 import { mapGetters, mapState } from 'vuex';
 
 import ActionMenu from '@pkg/components/ActionMenu.vue';
-import BackendProgress from '@pkg/components/BackendProgress.vue';
 import Header from '@pkg/components/Header.vue';
 import Nav from '@pkg/components/Nav.vue';
+import StatusBar from '@pkg/components/StatusBar.vue';
 import TheTitle from '@pkg/components/TheTitle.vue';
 import initExtensions from '@pkg/preload/extensions';
 import { ipcRenderer } from '@pkg/utils/ipcRenderer';
@@ -35,11 +40,15 @@ import { mainRoutes } from '@pkg/window/constants';
 export default {
   name:       'App',
   components: {
+    StatusBar,
     ActionMenu,
-    BackendProgress,
     rdNav:    Nav,
     rdHeader: Header,
     TheTitle,
+  },
+
+  data() {
+    return { blur: false };
   },
 
   async fetch() {
@@ -79,15 +88,19 @@ export default {
 
   beforeMount() {
     initExtensions();
-    ipcRenderer.once('backend-locked', (event) => {
+    ipcRenderer.on('window/blur', (event, blur) => {
+      this.blur = blur;
+    });
+    ipcRenderer.on('backend-locked', (event) => {
       ipcRenderer.send('preferences-close');
       this.showCreatingSnapshotDialog();
     });
-    ipcRenderer.once('backend-unlocked', () => {
+    ipcRenderer.on('backend-unlocked', () => {
       ipcRenderer.send('dialog/close', { dialog: 'SnapshotsDialog' });
-      ipcRenderer.removeAllListeners('backend-locked');
     });
+
     ipcRenderer.send('backend-state-check');
+
     ipcRenderer.on('k8s-check-state', (event, state) => {
       this.$store.dispatch('k8sManager/setK8sState', state);
     });
@@ -120,6 +133,7 @@ export default {
     ipcRenderer.off('extensions/getContentArea');
     ipcRenderer.removeAllListeners('backend-locked');
     ipcRenderer.removeAllListeners('backend-unlocked');
+    ipcRenderer.removeAllListeners('window/blur');
   },
 
   methods: {
@@ -173,11 +187,15 @@ export default {
     "header   header"
     "nav      title"
     "nav      body"    1fr
-    "progress body"
+    "nav      status-bar"
     / var(--nav-width) 1fr;
   background-color: var(--body-bg);
   width: 100vw;
   height: 100vh;
+
+  &.blur {
+   opacity: 0.2;
+  }
 
   .header {
     grid-area: header;
@@ -189,19 +207,17 @@ export default {
     border-right: var(--nav-border-size) solid var(--nav-border);
   }
 
-  .progress {
-    grid-area: progress;
-    background-color: var(--nav-bg);
-    padding: 10px;
-    border-right: var(--nav-border-size) solid var(--nav-border);
-  }
-
   .body {
     display: grid;
     grid-area: body;
     grid-template-rows: auto 1fr;
     padding: 0 20px 20px 20px;
     overflow: auto;
+  }
+
+  .status-bar {
+    grid-area: status-bar;
+    border-top: var(--nav-border-size) solid var(--nav-border);
   }
 }
 </style>

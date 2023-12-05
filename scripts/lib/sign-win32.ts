@@ -11,6 +11,9 @@ import yaml from 'yaml';
 
 import { simpleSpawn } from 'scripts/simple_process';
 
+/** signFileFn is a function that signs a single file. */
+type signFileFn = (...filePath: string[]) => Promise<void>;
+
 /**
  * Mandatory configuration for Windows.
  *
@@ -36,19 +39,12 @@ interface ElectronBuilderConfiguration {
   productName: string;
   files?: Array<string>;
   win?: Partial<typeof DEFAULT_WINDOWS_CONFIG & typeof REQUIRED_WINDOWS_CONFIG>;
-}
-
-async function getVersion() {
-  const version = JSON.parse(await fs.promises.readFile('package.json', 'utf-8'))['version'];
-
-  if (!version) {
-    throw new Error("Can't find the version field in package.json");
+  extraMetadata: {
+    version: string;
   }
-
-  return version;
 }
 
-export async function sign(workDir: string) {
+export async function sign(workDir: string): Promise<string> {
   const certFingerprint = process.env.CSC_FINGERPRINT ?? '';
   const certPassword = process.env.CSC_KEY_PASSWORD ?? '';
 
@@ -66,7 +62,7 @@ export async function sign(workDir: string) {
   const signingConfigPath = path.join(unpackedDir, 'build', 'signing-config-win.yaml');
   const signingConfigText = await fs.promises.readFile(signingConfigPath, 'utf-8');
   const signingConfig: Record<string, string[]> = yaml.parse(signingConfigText);
-  const versionedAppName = `${ signingConfig.productName } ${ await getVersion() }`;
+  const versionedAppName = `${ config.productName } ${ config.extraMetadata.version }`;
 
   config.win ??= {};
   defaults(config.win, DEFAULT_WINDOWS_CONFIG);
@@ -89,15 +85,20 @@ export async function sign(workDir: string) {
     toolArgs.push('/p', certPassword);
   }
 
+  const signFn: signFileFn = async(...fullPath) => {
+    await simpleSpawn(toolPath, [...toolArgs, ...fullPath]);
+  };
+  const filesToSign = new Set<string>();
+
   for await (const fullPath of findFilesToSign(unpackedDir, signingConfig)) {
     // Fail if a whitelisted file doesn't exist
     await fs.promises.access(fullPath);
-    console.log(`Signing ${ fullPath }`);
-
-    await simpleSpawn(toolPath, [...toolArgs, fullPath]);
+    filesToSign.add(fullPath);
   }
 
-  await buildWiX(workDir, unpackedDir, config);
+  await signFn(...filesToSign);
+
+  return await buildWiX(workDir, unpackedDir, signFn);
 }
 
 /**
@@ -123,10 +124,8 @@ async function *findFilesToSign(unpackedDir: string, signingConfig: Record<strin
     }
   }
 
-  for (const child of await fs.promises.readdir(unpackedDir, { recursive: true, withFileTypes: true })) {
-    const childPath = path.normalize(path.join(child.path, child.name));
-
-    if (!/\.exe$/i.test(childPath)) {
+  for await (const childPath of findFiles(unpackedDir)) {
+    if (!['.exe', '.dll', '.ps1'].includes(path.extname(childPath))) {
       continue;
     }
     if (toSign.has(childPath)) {
@@ -147,27 +146,24 @@ async function *findFilesToSign(unpackedDir: string, signingConfig: Record<strin
   }
 }
 
-async function buildWiX(workDir: string, unpackedDir: string, config: ElectronBuilderConfiguration) {
+/**
+ * Recursively yield all plain files in the given directory.
+ */
+async function *findFiles(dir: string): AsyncIterable<string> {
+  for (const child of await fs.promises.readdir(dir, { withFileTypes: true })) {
+    if (child.isDirectory()) {
+      yield * findFiles(path.join(dir, child.name));
+    } else if (child.isFile()) {
+      yield path.normalize(path.join(dir, child.name));
+    }
+  }
+}
+
+async function buildWiX(workDir: string, unpackedDir: string, signFn: signFileFn): Promise<string> {
   const buildInstaller = (await import('./installer-win32')).default;
   const installerPath = await buildInstaller(workDir, unpackedDir);
-  const versionedAppName = `${ config.productName } ${ await getVersion() }`;
 
-  if (!config.win?.certificateSha1) {
-    throw new Error(`Assertion error: certificate fingerprint not set`);
-  }
+  await signFn(installerPath);
 
-  const toolPath = path.join(await getSignVendorPath(), 'windows-10', process.arch, 'signtool.exe');
-  const toolArgs = [
-    'sign',
-    '/debug',
-    '/sha1', config.win.certificateSha1,
-    '/fd', 'SHA256',
-    '/td', 'SHA256',
-    '/tr', config.win.rfc3161TimeStampServer as string,
-    '/du', 'https://rancherdesktop.io',
-    '/d', versionedAppName,
-    installerPath,
-  ];
-
-  await simpleSpawn(toolPath, toolArgs);
+  return installerPath;
 }

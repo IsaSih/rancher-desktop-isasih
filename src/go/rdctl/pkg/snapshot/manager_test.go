@@ -1,11 +1,16 @@
 package snapshot
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/rancher-sandbox/rancher-desktop/src/go/rdctl/pkg/runner"
 )
 
 type TestFile struct {
@@ -22,7 +27,7 @@ func TestManager(t *testing.T) {
 		if err := manager.ValidateName(snapshotName); err != nil {
 			t.Fatalf("failed to validate first snapshot: %s", err)
 		}
-		snapshot, err := manager.Create(snapshotName, "")
+		snapshot, err := manager.Create(context.Background(), snapshotName, "")
 		if err != nil {
 			t.Fatalf("failed to create first snapshot: %s", err)
 		}
@@ -38,55 +43,92 @@ func TestManager(t *testing.T) {
 		}
 	})
 
-	t.Run("ValidateName should disallow invalid names", func(t *testing.T) {
-		paths, _ := populateFiles(t, true)
-		manager := newTestManager(paths)
-		oversizeName :=
-			// 251 characters is too long (and the indentation here is what our linter demands)
-			"12345678911234567892123456789312345678941234567895123456789612345678971234567898" +
-				"12345678991234567890123456789112345678921234567893123456789412345678951234567896" +
-				"12345678971234567898123456789912345678901234567891123456789212345678931234567894" +
-				"12345678951"
-		nameWithTab := "can't contain a \t tab"
-		invalidNames := []string{
-			"", // empty string not allowed
-			" can't start with a space",
-			`can't end with a "space" `,
-			oversizeName,
-			nameWithTab,
-			"can't contain a \n newline",
-			"can't contain a \r carriage-return",
-			"can't contain a \x00 null-byte",
-			"can't contain a \x07 control character",
-		}
-		for _, invalidName := range invalidNames {
-			if err := manager.ValidateName(invalidName); err == nil {
-				t.Errorf("name %q is invalid but no error was returned", invalidName)
+	testCases := []struct {
+		Name          string
+		ExpectedError string
+		// When the name we are validating is above a certain length, it should
+		// be truncated to a certain length in the error message. Otherwise, it
+		// should be left as is.
+		ExpectedErrMsgName string
+	}{
+		{
+			Name:          "", // empty string not allowed
+			ExpectedError: "snapshot name must not be the empty string",
+		},
+		{
+			Name:               " can't start with a space",
+			ExpectedError:      "must not start with a white-space character",
+			ExpectedErrMsgName: " can't start with a space",
+		},
+		{
+			Name:               " 12345678911234567892123456我喜欢鸡肉",
+			ExpectedError:      "must not start with a white-space character",
+			ExpectedErrMsgName: " 12345678911234567892123456我喜…",
+		},
+		{
+			Name:               `can't end with a "space" `,
+			ExpectedError:      "must not end with a white-space character",
+			ExpectedErrMsgName: `can't end with a "space" `,
+		},
+		{
+			Name:               `我喜欢鸡肉1234567891123456789212345 `,
+			ExpectedError:      "must not end with a white-space character",
+			ExpectedErrMsgName: `…喜欢鸡肉1234567891123456789212345 `,
+		},
+		{
+			Name:               "filename_too_long_workaround",
+			ExpectedError:      "max length is",
+			ExpectedErrMsgName: "12345678911234567892123456789…",
+		},
+		{
+			Name:          "can't contain a \t tab",
+			ExpectedError: `invalid character '\t' at position 16 in name: all characters must be printable or a space`,
+		},
+		{
+			Name:          "can't contain a \n newline",
+			ExpectedError: `invalid character '\n' at position 16 in name: all characters must be printable or a space`,
+		},
+		{
+			Name:          "can't contain a \r carriage-return",
+			ExpectedError: `invalid character '\r' at position 16 in name: all characters must be printable or a space`,
+		},
+		{
+			Name:          "can't contain a \x00 null-byte",
+			ExpectedError: `invalid character '\x00' at position 16 in name: all characters must be printable or a space`,
+		},
+		{
+			Name:          "can't contain a \a control character",
+			ExpectedError: `invalid character '\a' at position 16 in name: all characters must be printable or a space`,
+		},
+	}
+	for _, testCase := range testCases {
+		description := fmt.Sprintf("ValidateName should disallow invalid names (case %+v)", testCase)
+		t.Run(description, func(t *testing.T) {
+			paths, _ := populateFiles(t, true)
+			manager := newTestManager(paths)
+			// The test case name is used in the name of a file inside the temporary
+			// directory, which means it is limited in length. Work around this.
+			if testCase.Name == "filename_too_long_workaround" {
+				// 251 characters is too long (and the indentation here is what our linter demands)
+				testCase.Name = "12345678911234567892123456789312345678941234567895123456789612345678971234567898" +
+					"12345678991234567890123456789112345678921234567893123456789412345678951234567896" +
+					"12345678971234567898123456789912345678901234567891123456789212345678931234567894" +
+					"12345678951"
 			}
-		}
-		// The above loop verifies that each invalid name is found invalid.
-		// The following code verifies that we get the actual
-		err := manager.ValidateName(oversizeName)
-		if err == nil {
-			t.Error("oversize name is invalid but no error was returned")
-		} else if !strings.Contains(err.Error(), "…") {
-			t.Errorf("No ellipsis in reported name")
-		}
-		err = manager.ValidateName(nameWithTab)
-		if err == nil {
-			t.Error("name with tab is invalid but no error was returned")
-		} else if !strings.Contains(err.Error(), "invalid character value 9 at position 16 in name: all characters must be printable or a space") {
-			t.Errorf("failed to report unprintable character in name, got %s", err.Error())
-		}
-		longishNameEndingWithSpace := "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ "
-		endOfLongishString := longishNameEndingWithSpace[len(longishNameEndingWithSpace)-nameDisplayCutoffSize:]
-		err = manager.ValidateName(longishNameEndingWithSpace)
-		if err == nil {
-			t.Error(" name ending with space not caught")
-		} else if !strings.Contains(err.Error(), "…"+endOfLongishString) {
-			t.Errorf("Longish invalid name not truncated as expected")
-		}
-	})
+			err := manager.ValidateName(testCase.Name)
+			if err == nil {
+				t.Errorf("expected error but got err == nil")
+			} else if !strings.Contains(err.Error(), testCase.ExpectedError) {
+				t.Errorf("unexpected error %q", err)
+			}
+			// check that we are truncating the name properly in the error message
+			if len(testCase.ExpectedErrMsgName) > 0 {
+				if !strings.Contains(err.Error(), strconv.Quote(testCase.ExpectedErrMsgName)) {
+					t.Errorf("error %q does not contain name %q", err, strconv.Quote(testCase.ExpectedErrMsgName))
+				}
+			}
+		})
+	}
 
 	t.Run("Should create these valid names", func(t *testing.T) {
 		paths, _ := populateFiles(t, true)
@@ -99,6 +141,7 @@ func TestManager(t *testing.T) {
 				"12345678971234567898123456789912345678901234567891123456789212345678931234567894" +
 				"1234567895",
 			"french student: élève",
+			"我喜欢鸡肉",
 		}
 		for _, validName := range validNames {
 			if err := manager.ValidateName(validName); err != nil {
@@ -114,7 +157,7 @@ func TestManager(t *testing.T) {
 			var lastSnapshot Snapshot
 			for i := range []int{1, 2, 3} {
 				snapshotName := fmt.Sprintf("test-snapshot-%d", i)
-				snapshot, err := manager.Create(snapshotName, "")
+				snapshot, err := manager.Create(context.Background(), snapshotName, "")
 				if err != nil {
 					t.Fatalf("failed to create snapshot %q: %s", snapshotName, err)
 				}
@@ -144,7 +187,7 @@ func TestManager(t *testing.T) {
 	t.Run("Delete", func(t *testing.T) {
 		paths, _ := populateFiles(t, true)
 		manager := newTestManager(paths)
-		snapshot, err := manager.Create("test-snapshot", "")
+		snapshot, err := manager.Create(context.Background(), "test-snapshot", "")
 		if err != nil {
 			t.Fatalf("failed to create snapshot: %s", err)
 		}
@@ -170,7 +213,7 @@ func TestManager(t *testing.T) {
 	t.Run("Restore should return an error if asked to restore a nonexistent snapshot", func(t *testing.T) {
 		paths, _ := populateFiles(t, true)
 		manager := newTestManager(paths)
-		if err := manager.Restore("no-such-snapshot-id"); err == nil {
+		if err := manager.Restore(context.Background(), "no-such-snapshot-id"); err == nil {
 			t.Errorf("Failed to complain when asked to restore a nonexistent snapshot")
 		}
 	})
@@ -178,7 +221,7 @@ func TestManager(t *testing.T) {
 	t.Run("Restore should return the proper error if asked to restore from an incomplete snapshot", func(t *testing.T) {
 		paths, _ := populateFiles(t, true)
 		manager := newTestManager(paths)
-		snapshot, err := manager.Create("test-snapshot", "")
+		snapshot, err := manager.Create(context.Background(), "test-snapshot", "")
 		if err != nil {
 			t.Fatalf("failed to create snapshot: %s", err)
 		}
@@ -186,8 +229,40 @@ func TestManager(t *testing.T) {
 		if err := os.Remove(completeFilePath); err != nil {
 			t.Fatalf("failed to remove %q: %s", completeFileName, err)
 		}
-		if err := manager.Restore(snapshot.Name); err == nil {
+		if err := manager.Restore(context.Background(), snapshot.Name); err == nil {
 			t.Errorf("Failed to complain when asked to restore an incomplete snapshot")
+		}
+	})
+
+	t.Run("Restore should return proper error and not run RestoreFiles when context is already cancelled", func(t *testing.T) {
+		paths, _ := populateFiles(t, true)
+		manager := newTestManager(paths)
+		snapshotName := "test-snapshot"
+		_, err := manager.Create(context.Background(), snapshotName, "")
+		if err != nil {
+			t.Fatalf("failed to create snapshot: %s", err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if err := manager.Restore(ctx, snapshotName); !errors.Is(err, runner.ErrContextDone) {
+			t.Errorf("Error is of unexpected type: %q", err)
+		}
+	})
+
+	t.Run("Restore should return data reset error when RestoreFiles encounters an error and resets data", func(t *testing.T) {
+		paths, _ := populateFiles(t, true)
+		manager := newTestManager(paths)
+		snapshotName := "test-snapshot"
+		snapshot, err := manager.Create(context.Background(), snapshotName, "")
+		if err != nil {
+			t.Fatalf("failed to create snapshot: %s", err)
+		}
+		snapshotSettingsPath := filepath.Join(paths.Snapshots, snapshot.ID, "settings.json")
+		if err := os.RemoveAll(snapshotSettingsPath); err != nil {
+			t.Fatalf("failed to remove settings.json: %s", err)
+		}
+		if err := manager.Restore(context.Background(), snapshotName); !errors.Is(err, ErrDataReset) {
+			t.Errorf("Error is of unexpected type: %q", err)
 		}
 	})
 }

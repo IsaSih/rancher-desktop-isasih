@@ -2,8 +2,12 @@ package wsl
 
 import (
 	"fmt"
-	"github.com/rancher-sandbox/rancher-desktop/src/go/rdctl/pkg/factoryreset"
 	"os/exec"
+	"strings"
+
+	"github.com/sirupsen/logrus"
+	"golang.org/x/sys/windows"
+	"golang.org/x/text/encoding/unicode"
 )
 
 type WSL interface {
@@ -21,11 +25,40 @@ type WSL interface {
 type WSLImpl struct{}
 
 func (wsl WSLImpl) UnregisterDistros() error {
-	return factoryreset.UnregisterWSL()
+	cmd := exec.Command("wsl", "--list", "--quiet")
+	cmd.SysProcAttr = &windows.SysProcAttr{CreationFlags: windows.CREATE_NO_WINDOW}
+	rawBytes, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("error getting current WSLs: %w", err)
+	}
+	decoder := unicode.UTF16(unicode.LittleEndian, unicode.IgnoreBOM).NewDecoder()
+	actualOutput, err := decoder.String(string(rawBytes))
+	if err != nil {
+		return fmt.Errorf("error getting current WSLs: %w", err)
+	}
+	actualOutput = strings.ReplaceAll(actualOutput, "\r", "")
+	wsls := strings.Split(actualOutput, "\n")
+	wslsToKill := []string{}
+	for _, s := range wsls {
+		if s == "rancher-desktop" || s == "rancher-desktop-data" {
+			wslsToKill = append(wslsToKill, s)
+		}
+	}
+
+	for _, wsl := range wslsToKill {
+		cmd := exec.Command("wsl", "--unregister", wsl)
+		cmd.SysProcAttr = &windows.SysProcAttr{CreationFlags: windows.CREATE_NO_WINDOW}
+		if err := cmd.Run(); err != nil {
+			logrus.Errorf("Error unregistering WSL distribution %s: %s\n", wsl, err)
+		}
+	}
+	return nil
 }
 
 func (wsl WSLImpl) ExportDistro(distroName, fileName string) error {
 	cmd := exec.Command("wsl.exe", "--export", distroName, fileName)
+	// Prevents "signals" (think ctrl+C) from affecting called subprocess
+	cmd.SysProcAttr = &windows.SysProcAttr{CreationFlags: windows.CREATE_NO_WINDOW}
 	if output, err := cmd.Output(); err != nil {
 		return fmt.Errorf("failed to export WSL distro %q: %w", distroName, wrapWSLError(output, err))
 	}
@@ -34,6 +67,8 @@ func (wsl WSLImpl) ExportDistro(distroName, fileName string) error {
 
 func (wsl WSLImpl) ImportDistro(distroName, installLocation, fileName string) error {
 	cmd := exec.Command("wsl.exe", "--import", distroName, installLocation, fileName, "--version", "2")
+	// Prevents "signals" (think ctrl+C) from affecting called subprocess
+	cmd.SysProcAttr = &windows.SysProcAttr{CreationFlags: windows.CREATE_NO_WINDOW}
 	if output, err := cmd.Output(); err != nil {
 		return fmt.Errorf("failed to import WSL distro %q: %w", distroName, wrapWSLError(output, err))
 	}

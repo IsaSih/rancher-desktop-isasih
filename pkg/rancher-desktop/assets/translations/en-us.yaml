@@ -136,6 +136,15 @@ product:
   clusterManagement: Cluster Management
   monitoring: Monitoring
   mcapps: Multi-cluster Apps
+  version: Version
+  versionChecking: (checking...)
+  networkStatus: Network status
+  kubernetesVersion: Kubernetes
+  containerEngine:
+    fullName: Container Engine
+    abbreviation: CE
+  notFound: not found
+  deactivated: deactivated
 
 suffix:
   percent: "%"
@@ -4784,6 +4793,8 @@ snapshots:
     delete:
       success: "Deleted '<b>'{snapshot}'</b>'"
       error: 'Delete error: {error}'
+    lock:
+      info: "A snapshot lock file has been detected for an unusually long time. If you believe this is an error, you can try to remove the lock file by running <code>rdctl snapshot unlock</code>."
 
 
 ##############################

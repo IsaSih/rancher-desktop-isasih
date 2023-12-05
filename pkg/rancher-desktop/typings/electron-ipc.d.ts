@@ -182,6 +182,7 @@ export interface IpcRendererEvents {
   'dialog/size': (size: {width: number, height: number}) => void;
   'dialog/options': (...args: any) => void;
   'dialog/error': (args: any) => void;
+  'dialog/info': (args: Record<string, string>) => void;
   'dashboard-open': () => void;
   // #endregion
 
@@ -199,6 +200,10 @@ export interface IpcRendererEvents {
   'extensions/spawn/error': (id: string, error: Error | NodeJS.Signals) => void;
   'extensions/spawn/output': (id: string, data: { stdout: string } | { stderr: string }) => void;
   'ok:extensions/uninstall': (id: string) => void;
+  // #endregion
+
+  // #region window
+  'window/blur': (state: boolean) => void;
   // #endregion
 
   // #region preferences

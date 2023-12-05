@@ -1,6 +1,7 @@
 package snapshot
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/rancher-sandbox/rancher-desktop/src/go/rdctl/pkg/lock"
 	"github.com/rancher-sandbox/rancher-desktop/src/go/rdctl/pkg/paths"
+	"github.com/rancher-sandbox/rancher-desktop/src/go/rdctl/pkg/runner"
 )
 
 const completeFileName = "complete.txt"
@@ -58,29 +60,30 @@ func (manager *Manager) SnapshotDirectory(snapshot Snapshot) string {
 	return filepath.Join(manager.Paths.Snapshots, snapshot.ID)
 }
 
-// ValidateName - does syntactic validation on the name
+// ValidateName checks that name is a valid snapshot name and that
+// it is not used by an existing snapshot.
 func (manager *Manager) ValidateName(name string) error {
 	if len(name) == 0 {
 		return fmt.Errorf("snapshot name must not be the empty string")
 	}
-	reportedName := name
-	if len(reportedName) > nameDisplayCutoffSize {
-		reportedName = reportedName[0:nameDisplayCutoffSize] + "…"
-	}
-	if len(name) > maxNameLength {
-		return fmt.Errorf(`invalid name %q: max length is %d, %d were specified`, reportedName, maxNameLength, len(name))
+	runeName := []rune(name)
+	if len(runeName) > maxNameLength {
+		errMsgName := truncate(name, nameDisplayCutoffSize)
+		return fmt.Errorf(`invalid name %q: max length is %d, %d were specified`, errMsgName, maxNameLength, len(runeName))
 	}
 	if err := checkForInvalidCharacter(name); err != nil {
 		return err
 	}
 	if unicode.IsSpace(rune(name[0])) {
-		return fmt.Errorf(`invalid name %q: must not start with a white-space character`, reportedName)
+		errMsgName := truncate(name, nameDisplayCutoffSize)
+		return fmt.Errorf(`invalid name %q: must not start with a white-space character`, errMsgName)
 	}
-	if unicode.IsSpace(rune(name[len(name)-1])) {
-		if len(name) > nameDisplayCutoffSize {
-			reportedName = "…" + name[len(name)-nameDisplayCutoffSize:]
+	if unicode.IsSpace(runeName[len(runeName)-1]) {
+		errMsgName := name
+		if len(runeName) > nameDisplayCutoffSize {
+			errMsgName = "…" + string(runeName[len(runeName)-nameDisplayCutoffSize:])
 		}
-		return fmt.Errorf(`invalid name %q: must not end with a white-space character`, reportedName)
+		return fmt.Errorf(`invalid name %q: must not end with a white-space character`, errMsgName)
 	}
 	currentSnapshots, err := manager.List(false)
 	if err != nil {
@@ -88,7 +91,8 @@ func (manager *Manager) ValidateName(name string) error {
 	}
 	for _, currentSnapshot := range currentSnapshots {
 		if currentSnapshot.Name == name {
-			return fmt.Errorf("name %q already exists", name)
+			errMsgName := truncate(name, nameDisplayCutoffSize)
+			return fmt.Errorf("name %q already exists", errMsgName)
 		}
 	}
 	return nil
@@ -114,7 +118,7 @@ func (manager *Manager) writeMetadataFile(snapshot Snapshot) error {
 }
 
 // Create a new snapshot.
-func (manager *Manager) Create(name, description string) (snapshot Snapshot, err error) {
+func (manager *Manager) Create(ctx context.Context, name, description string) (snapshot Snapshot, err error) {
 	id, err := uuid.NewRandom()
 	if err != nil {
 		return snapshot, fmt.Errorf("failed to generate ID for snapshot: %w", err)
@@ -142,7 +146,7 @@ func (manager *Manager) Create(name, description string) (snapshot Snapshot, err
 		return
 	}
 	if err = manager.writeMetadataFile(snapshot); err == nil {
-		err = manager.CreateFiles(manager.Paths, manager.SnapshotDirectory(snapshot))
+		err = manager.CreateFiles(ctx, manager.Paths, manager.SnapshotDirectory(snapshot))
 	}
 	return
 }
@@ -199,7 +203,7 @@ func (manager *Manager) Delete(name string) error {
 }
 
 // Restore Rancher Desktop to the state saved in a snapshot.
-func (manager *Manager) Restore(name string) (err error) {
+func (manager *Manager) Restore(ctx context.Context, name string) (err error) {
 	snapshot, err := manager.Snapshot(name)
 	if err != nil {
 		return err
@@ -209,13 +213,19 @@ func (manager *Manager) Restore(name string) (err error) {
 		return err
 	}
 	defer func() {
-		// Don't restart the backend if the restore failed
-		unlockErr := manager.Unlock(manager.Paths, err == nil)
+		// Restart the backend only if a data reset occurred
+		unlockErr := manager.Unlock(manager.Paths, !errors.Is(err, ErrDataReset))
 		if err == nil {
 			err = unlockErr
 		}
 	}()
-	if err = manager.RestoreFiles(manager.Paths, manager.SnapshotDirectory(snapshot)); err != nil {
+	// If the context is marked done (i.e. the user cancelled the
+	// operation) we can avoid running RestoreFiles() and thus avoid
+	// an unnecessary data reset.
+	if contextIsDone(ctx) {
+		return runner.ErrContextDone
+	}
+	if err = manager.RestoreFiles(ctx, manager.Paths, manager.SnapshotDirectory(snapshot)); err != nil {
 		return fmt.Errorf("failed to restore files: %w", err)
 	}
 
@@ -225,8 +235,27 @@ func (manager *Manager) Restore(name string) (err error) {
 func checkForInvalidCharacter(name string) error {
 	for idx, c := range name {
 		if !unicode.IsPrint(c) {
-			return fmt.Errorf("invalid character value %d at position %d in name: all characters must be printable or a space", c, idx)
+			return fmt.Errorf("invalid character %q at position %d in name: all characters must be printable or a space", c, idx)
 		}
 	}
 	return nil
+}
+
+func contextIsDone(ctx context.Context) bool {
+	select {
+	case <-ctx.Done():
+		return true
+	default:
+		return false
+	}
+}
+
+// Does a utf8-aware truncation of input to maximum maxChars
+// unicode code points. Adds an ellipsis if truncation occurred.
+func truncate(input string, maxChars int) string {
+	runeInput := []rune(input)
+	if len(runeInput) > maxChars {
+		return string(runeInput[0:maxChars-1]) + "…"
+	}
+	return input
 }

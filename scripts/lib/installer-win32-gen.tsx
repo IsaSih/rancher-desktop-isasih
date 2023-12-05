@@ -200,18 +200,16 @@ export default async function generateFileList(rootPath: string): Promise<string
       return null;
     },
 
-    // @ts-ignore
-    'wix-install-wsl.ps1': (d, f) => {
-      return <Component>
-        <Condition>NOT WSLKERNELINSTALLED</Condition>
-        <File
-          Name={f.name}
-          Source="build\\wix-install-wsl.ps1"
-          ReadOnly="yes"
-          KeyPath="yes"
-          Id={f.id}
-        />
-      </Component>;
+    'wix-custom-action.dll': () => {
+      // This file does not need to be installed; it's used as an unnamed
+      // binary instead; see main.wxs.
+      return null;
+    },
+
+    'resources\\resources\\win32\\internal\\dummy.exe': () => {
+      // This file is used for shortcut icons in the installer; it does not need
+      // to be installed.
+      return null;
     },
 
     // @ts-ignore
@@ -274,8 +272,6 @@ export default async function generateFileList(rootPath: string): Promise<string
       </Component>;
     },
   };
-
-  rootDir.files.push({ name: 'wix-install-wsl.ps1', id: 'f_install_wsl' });
 
   const jsxElement = (<Fragment>
     <Directory Id="TARGETDIR" Name="SourceDir">

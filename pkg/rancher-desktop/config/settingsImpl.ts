@@ -9,7 +9,7 @@ import _ from 'lodash';
 
 import {
   CURRENT_SETTINGS_VERSION, defaultSettings, DeploymentProfileType,
-  LockedSettingsType, Settings,
+  LockedSettingsType, Settings, SettingsError,
 } from '@pkg/config/settings';
 import { PathManagementStrategy } from '@pkg/integrations/pathManager';
 import clone from '@pkg/utils/clone';
@@ -32,20 +32,26 @@ let settings: Settings | undefined;
  */
 function loadFromDisk(): Settings {
   // Throw an ENOENT error if the file doesn't exist; the caller should know what to do.
-  const rawdata = fs.readFileSync(join(paths.config, 'settings.json'));
-  const cfg = clone(defaultSettings);
+  const settingsPath = join(paths.config, 'settings.json');
+  const rawdata = fs.readFileSync(settingsPath);
+  let originalConfig: Record<string, any>;
 
   try {
-    // If the existing settings file is partial, fill in the missing fields with defaults.
-    merge(cfg, JSON.parse(rawdata.toString()));
-
-    return migrateSettingsToCurrentVersion(cfg);
+    originalConfig = JSON.parse(rawdata.toString());
   } catch (err: any) {
     console.error(`Error JSON-parsing existing settings contents ${ rawdata }`, err);
     console.error('The old settings file will be replaced with the default settings.');
 
-    return cfg;
+    return defaultSettings;
   }
+
+  if (!('version' in originalConfig)) {
+    throw new SettingsError(`No version specified in ${ settingsPath }`);
+  }
+  const updatedConfig = migrateSettingsToCurrentVersion(originalConfig);
+
+  // If the existing settings file is partial, fill in the missing fields with defaults.
+  return _.defaultsDeep(updatedConfig, defaultSettings);
 }
 
 export function save(cfg: Settings) {
@@ -171,7 +177,7 @@ export function getDefaultMemory() {
 export function merge<T = Settings>(cfg: T, changes: RecursivePartial<RecursiveReadonly<T>>): T {
   const customizer = (objValue: any, srcValue: any) => {
     if (Array.isArray(objValue)) {
-      // If the destination is a array of primitives, just return the source
+      // If the destination is an array of primitives, just return the source
       // (i.e. completely overwrite).
       if (objValue.every(i => typeof i !== 'object')) {
         return srcValue;

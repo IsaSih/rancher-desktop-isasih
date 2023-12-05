@@ -6,11 +6,18 @@
 'use strict';
 
 import childProcess from 'child_process';
-import * as fs from 'fs/promises';
+import fs from 'fs';
 import * as path from 'path';
 
-import buildInstaller from './lib/installer-win32';
+import { executeAppBuilder } from 'builder-util';
+import _ from 'lodash';
+import yaml from 'yaml';
+
+import buildUtils from './lib/build-utils';
+import buildInstaller, { buildCustomAction } from './lib/installer-win32';
 import { simpleSpawn } from './simple_process';
+
+import type { Configuration } from 'app-builder-lib';
 
 /** Get the argument value (if any) for any of the given argument names */
 function getArgValue(args: string[], ...argNames: string[]): string | undefined {
@@ -37,45 +44,87 @@ function getArgValue(args: string[], ...argNames: string[]): string | undefined 
 class Builder {
   async replaceInFile(srcFile: string, pattern: string | RegExp, replacement: string, dstFile?: string) {
     dstFile = dstFile || srcFile;
-    await fs.stat(srcFile);
-    const data = await fs.readFile(srcFile, 'utf8');
+    await fs.promises.stat(srcFile);
+    const data = await fs.promises.readFile(srcFile, 'utf8');
 
-    await fs.writeFile(dstFile, data.replace(pattern, replacement));
+    await fs.promises.writeFile(dstFile, data.replace(pattern, replacement));
   }
 
   async package() {
     console.log('Packaging...');
-    const args = process.argv.slice(2).filter(x => x !== '--serial');
-    // On Windows, electron-builder will run the installer to generate the
-    // uninstall stub; however, we set the installer to be elevated, in order
-    // to ensure that we can install WSL if necessary.  To make it possible to
-    // build the installer as a non-administrator, we need to set the special
-    // environment variable `__COMPAT_LAYER=RunAsInvoker` to force the installer
-    // to run as the existing user.
-    const env = { ...process.env, __COMPAT_LAYER: 'RunAsInvoker' };
+
+    // Build the electron builder configuration to include the version data
+    const config: Configuration = yaml.parse(await fs.promises.readFile('electron-builder.yml', 'utf-8'));
+    const configPath = path.join('dist', 'electron-builder.yaml');
     const fullBuildVersion = childProcess.execFileSync('git', ['describe', '--tags']).toString().trim();
     const finalBuildVersion = fullBuildVersion.replace(/^v/, '');
+    const distDir = path.join(process.cwd(), 'dist');
+    const args = process.argv.slice(2).filter(x => x !== '--serial');
+
+    switch (process.platform) {
+    case 'linux':
+      await this.createLinuxResources(finalBuildVersion);
+      break;
+    case 'win32':
+      await this.createWindowsResources(distDir);
+      break;
+    }
+
+    _.set(config, 'extraMetadata.version', finalBuildVersion);
+    await fs.promises.writeFile(configPath, yaml.stringify(config), 'utf-8');
+
+    args.push('--config', configPath);
+    await simpleSpawn('node', ['node_modules/electron-builder/out/cli/cli.js', ...args]);
+  }
+
+  async buildInstaller() {
+    const appDir = path.join(buildUtils.distDir, 'win-unpacked');
+    const args = process.argv.slice(2).filter(x => x !== '--serial');
+    const targetList = getArgValue(args, '-w', '--win', '--windows');
+
+    if (targetList !== 'zip') {
+      // Only build installer if we're not asked not to.
+      await buildInstaller(buildUtils.distDir, appDir);
+    }
+  }
+
+  protected async createLinuxResources(finalBuildVersion: string) {
     const appData = 'packaging/linux/rancher-desktop.appdata.xml';
     const release = `<release version="${ finalBuildVersion }" date="${ new Date().toISOString() }"/>`;
 
     await this.replaceInFile(appData, /<release.*\/>/g, release, appData.replace('packaging', 'resources'));
-    args.push(`-c.extraMetadata.version=${ finalBuildVersion }`);
-    await simpleSpawn('node', ['node_modules/electron-builder/out/cli/cli.js', ...args], { env });
+  }
 
-    if (process.platform === 'win32') {
-      const distDir = path.join(process.cwd(), 'dist');
-      const appDir = path.join(distDir, 'win-unpacked');
-      const targetList = getArgValue(args, '-w', '--win', '--windows');
+  protected async createWindowsResources(workDir: string) {
+    // Create stub executable with the correct icon (for the installer)
+    const imageFile = path.join(process.cwd(), 'resources', 'icons', 'logo-square-512.png');
+    const iconArgs = ['icon', '--format', 'ico', '--out', workDir, '--input', imageFile];
+    const iconResult = await this.executeAppBuilderAsJson(iconArgs);
+    const iconFile = iconResult.icons[0].file;
+    const executable = path.join(process.cwd(), 'resources', 'win32', 'internal', 'dummy.exe');
+    const rceditArgs = [executable, '--set-icon', iconFile];
 
-      if (targetList !== 'zip') {
-        // Only build installer if we're not asked not to.
-        await buildInstaller(distDir, appDir);
-      }
+    await executeAppBuilder(['rcedit', '--args', JSON.stringify(rceditArgs)], undefined, undefined, 3);
+
+    // Create the custom action for the installer
+    await buildCustomAction();
+  }
+
+  protected async executeAppBuilderAsJson(...args: Parameters<typeof executeAppBuilder>) {
+    const result = JSON.parse(await executeAppBuilder(...args));
+
+    if (result.error) {
+      throw new Error(result.error);
     }
+
+    return result;
   }
 
   async run() {
     await this.package();
+    if (process.platform === 'win32') {
+      await this.buildInstaller();
+    }
   }
 }
 
