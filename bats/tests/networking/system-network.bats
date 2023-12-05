@@ -72,3 +72,4 @@ local_setup() {
     assert_success
     assert_output false
 }
+
