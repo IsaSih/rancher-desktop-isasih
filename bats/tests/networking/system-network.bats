@@ -23,14 +23,15 @@ local_setup() {
         skip 'This test only applies for system installation'
     fi
     localhost="127.0.0.1"
-    port=55042
-    ctrctl run -d --name hello-world -p $localhost:$port:80 strm/helloworld-http
+    port="55042"
+    container_image="strm/helloworld-http"
+    ctrctl run -d --name hello-world -p $localhost:$port:80 "${container_image}"
     IP_address=$(powershell.exe -c "Get-NetIPAddress -AddressFamily IPv4 | % { echo $_.IPAddress }")
-    for ip in "${IP_address}" do;
+    for ip in "${IP_address}"; do
         run try --max 9 --delay 10 powershell.exe -c "curl.exe $ip:$port"
-        if [$ip != "127.0.0.1" ]; then
+        if ["${ip}" != "${localhost}" ]; then
             assert_failure
-            assert_output --partial "Failed to connect to $ip port $port"
+            assert_output --partial "Failed to connect to "${ip}" port "${port}""
         else
             assert_success
             assert_output --partial "HTTP Hello World"
