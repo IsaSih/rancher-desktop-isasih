@@ -13,7 +13,7 @@ local_setup() {
 }
 
 @test 'Verify networking tunnel is false' {
-    run get_setting '.experimental.networkingTunnel'
+    run get_setting '.experimental.virtualMachine.networkingTunnel'
     assert_success
     assert_output false
 }
@@ -26,9 +26,9 @@ local_setup() {
     port="55042"
     container_image="strm/helloworld-http"
     ctrctl run -d --name hello-world -p $localhost:$port:80 "${container_image}"
-    IP_address=$(powershell.exe -c "Get-NetIPAddress -AddressFamily IPv4 | % { echo $_.IPAddress }")
+    IP_address=($(powershell.exe -c "Get-NetIPAddress -AddressFamily IPv4 | % { echo \$_.IPAddress }" | tr -d '\r'))
     for ip in "${IP_address}"; do
-        run try --max 9 --delay 10 powershell.exe -c "curl.exe $ip:$port"
+        run try --max 9 --delay 10 powershell.exe -c "curl.exe http://$ip:$port"
         if ["${ip}" != "${localhost}" ]; then
             assert_failure
             assert_output --partial "Failed to connect to "${ip}" port "${port}""
@@ -41,7 +41,7 @@ local_setup() {
 
 @test 'Enable networking tunnel' {
     rdctl set --experimental.virtual-machine.networking-tunnel=true
-    run get_setting '.experimental.networkingTunnel'
+    run get_setting '.experimental.virtualMachine.networkingTunnel'
     assert_success
     assert_output true
 }
@@ -58,7 +58,7 @@ local_setup() {
 }
 
 @test 'Reach container UI' {
-   run try --max 9 --delay 10 curl.exe --show-error localhost:8801
+   run try --max 9 --delay 10 curl.exe --show-error http://localhost:8801
    assert_success
    assert_output --partial "Welcome to nginx"
 }
@@ -68,7 +68,7 @@ local_setup() {
 }
 
 @test 'Verify networking tunnel is false after factory reset' {
-    run get_setting '.experimental.networkingTunnel'
+    run get_setting '.experimental.virtualMachine.networkingTunnel'
     assert_success
     assert_output false
 }
