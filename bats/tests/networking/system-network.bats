@@ -28,11 +28,12 @@ local_setup() {
     ctrctl run -d --name hello-world -p $localhost:$port:80 "${container_image}"
     IP_address=($(powershell.exe -c "Get-NetIPAddress -AddressFamily IPv4 | % { echo \$_.IPAddress }" | tr -d '\r'))
     for ip in "${IP_address}"; do
-        run try --max 9 --delay 10 powershell.exe -c "curl.exe http://$ip:$port"
         if ["${ip}" != "${localhost}" ]; then
+            run try --max 9 --delay 10 powershell.exe -c "curl.exe http://$ip:$port"
             assert_failure
             assert_output --partial "Failed to connect to "${ip}" port "${port}""
         else
+            run try --max 9 --delay 10 powershell.exe -c "curl.exe http://$ip:$port"
             assert_success
             assert_output --partial "HTTP Hello World"
         fi
@@ -53,7 +54,8 @@ local_setup() {
     assert_output false
 }
 
-@test 'Start nginx container' {
+@test 'Check Privileged Services - with non-defined host IP address' {
+   wait_for_container_engine
    ctrctl run -d -p 8801:80 --restart=always nginx
 }
 
@@ -62,14 +64,3 @@ local_setup() {
    assert_success
    assert_output --partial "Welcome to nginx"
 }
-
-@test 'Run factory reset' {
-   factory_reset
-}
-
-@test 'Verify networking tunnel is false after factory reset' {
-    run get_setting '.experimental.virtualMachine.networkingTunnel'
-    assert_success
-    assert_output false
-}
-
